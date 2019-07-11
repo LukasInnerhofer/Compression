@@ -126,10 +126,10 @@ namespace compression
 		{
 			/*
 			* \brief		Serialize huffman code into a format which can be written into a file header
-			* \param[out]	code Mapping of byte to huffman code
+			* \param[in]	code Mapping of byte to huffman code
 			* \return		Byte string representation of \p code
 			*/
-			std::vector<char> generate(const std::map<char, std::vector<bool>> &code)
+			std::vector<char> serialize(const std::map<char, std::vector<bool>> &code)
 			{
 				std::vector<char> header;
 				int16_t itBits = 0, itCodeBits = 0;
@@ -156,6 +156,26 @@ namespace compression
 				header.insert(header.begin(), static_cast<char>((header.size() + 1) >> 8));
 
 				return header;
+			}
+
+			/**
+			* \brief		Deserialize header to huffman code
+			* \param[in]	header Header to be deserialized
+			* \return		Huffman code generated from header
+			*/
+			std::map<char, std::vector<bool>> deserialize(const std::vector<char> &header)
+			{
+				uint8_t byte = 0;
+				uint8_t codeBitCount = 0;
+
+				for (std::vector<char>::const_iterator itHeader = header.begin(); itHeader != header.end();)
+				{
+					byte = *itHeader++;
+					codeBitCount = *itHeader++;
+
+				}
+
+				return std::map<char, std::vector<bool>>();
 			}
 		}
 
@@ -196,7 +216,7 @@ namespace compression
 			std::map<char, std::vector<bool>> code;
 			rootNodes[0]->getCode(code);
 
-			dataOut = header::generate(code);
+			dataOut = header::serialize(code);
 
 			int8_t itBits = 7;
 			int64_t itCodeBits = 0;
@@ -221,12 +241,23 @@ namespace compression
 				delete node;
 			}
 
+			decode(dataOut);
+
 			return dataOut;
 		}
 
 		/**
 		* \brief		Huffman decode entire dataset
 		*/
-		std::vector<char> decode(const std::vector<char> &dataIn);
+		std::vector<char> decode(const std::vector<char> &dataIn)
+		{
+			uint16_t headerSize = 0;
+
+			headerSize = (dataIn[0] << 8) | dataIn[1];
+
+			std::map<char, std::vector<bool>> code = header::deserialize({ dataIn.begin() + 2, dataIn.begin() + 2 + headerSize });
+
+			return std::vector<char>();
+		}
 	} // namespace huffman
 } // namespace compression
