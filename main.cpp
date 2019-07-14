@@ -10,8 +10,8 @@ int main()
 	std::vector<char> inData = {};
 	char byte;
 
-	ifs = std::ifstream(R"(D:\Users\lukas\Documents\visual studio projects\Compression\Release\in)", std::ios_base::binary);
-	ofs = std::ofstream("ot", std::ios_base::binary);
+	ifs = std::ifstream(R"(D:\Users\Lukas Innerhofer\Documents\vs projects\Compression\Release\in)", std::ios_base::binary);
+	ofs = std::ofstream(R"(D:\Users\Lukas Innerhofer\Documents\vs projects\Compression\Release\ot)", std::ios_base::binary);
 
 	while (ifs.get(byte))
 	{
@@ -23,8 +23,8 @@ int main()
 		ofs << static_cast<char>(outByte);
 	}
 
-	/*ifs = std::ifstream("ot", std::ios_base::binary);
-	ofs = std::ofstream("_i", std::ios_base::binary);
+	ifs = std::ifstream(R"(D:\Users\Lukas Innerhofer\Documents\vs projects\Compression\Release\ot)", std::ios_base::binary);
+	ofs = std::ofstream(R"(D:\Users\Lukas Innerhofer\Documents\vs projects\Compression\Release\_i)", std::ios_base::binary);
 
 	inData.clear();
 
@@ -33,10 +33,10 @@ int main()
 		inData.push_back(byte);
 	}
 
-	for (uint8_t outByte : compression::rle::decode(inData))
+	for (uint8_t outByte : compression::huffman::decode(inData))
 	{
 		ofs << outByte;
-	}*/
+	}
 
 	return 0;
 }

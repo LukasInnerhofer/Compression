@@ -102,14 +102,30 @@ namespace compression
 				this->occurences = occurences;
 			}
 
+			void freeRecursively()
+			{
+				if (children.first != nullptr)
+				{
+					children.first->freeRecursively();
+					children.first = nullptr;
+				}
+				if (children.second != nullptr)
+				{
+					 
+					children.second->freeRecursively();
+					children.second = nullptr;
+				}
+				delete this;
+			}
+
 			void getCode(std::map<char, std::vector<bool>> &nodes)
 			{
 				if (children.first != nullptr && children.second != nullptr)
 				{
-					tempBitset.push_back(true);
+					tempBitset.push_back(false);
 					children.first->getCode(nodes);
 					tempBitset.erase(tempBitset.end() - 1);
-					tempBitset.push_back(false);
+					tempBitset.push_back(true);
 					children.second->getCode(nodes);
 					tempBitset.erase(tempBitset.end() - 1);
 				}
@@ -132,7 +148,8 @@ namespace compression
 			std::vector<char> serialize(const std::map<char, std::vector<bool>> &code)
 			{
 				std::vector<char> header;
-				int16_t itBits = 0, itCodeBits = 0;
+				int16_t itBits = 0;
+				uint8_t itCodeBits = 0;
 
 				for (std::pair<char, std::vector<bool>> pair : code)
 				{
@@ -140,14 +157,17 @@ namespace compression
 					header.push_back(pair.second.size());
 					header.push_back(0);
 
-					for (itCodeBits = pair.second.size() - 1, itBits = 7; itCodeBits >= 0; --itCodeBits, --itBits)
+					for (itCodeBits = 0, itBits = 7; itCodeBits < pair.second.size();)
 					{
-						header[header.size() - 1] |= (pair.second[itCodeBits] << itBits);
+						header[header.size() - 1] |= (pair.second[itCodeBits++] << itBits);
 						
-						if (itBits == 0)
+						if (--itBits < 0)
 						{
 							itBits = 7;
-							header.push_back(0);
+							if (itCodeBits < pair.second.size())
+							{
+								header.push_back(0);
+							}
 						}
 					}
 				}
@@ -165,17 +185,33 @@ namespace compression
 			*/
 			std::map<char, std::vector<bool>> deserialize(const std::vector<char> &header)
 			{
+				std::map<char, std::vector<bool>> code;
 				uint8_t byte = 0;
-				uint8_t codeBitCount = 0;
-
-				for (std::vector<char>::const_iterator itHeader = header.begin(); itHeader != header.end();)
+				int16_t codeBitCount = 0;
+				int16_t itBits = 7;
+				std::vector<char>::const_iterator itHeader = header.begin();
+				do
 				{
 					byte = *itHeader++;
 					codeBitCount = *itHeader++;
+					itBits = 7;
+					while (--codeBitCount >= 0)
+					{
+						code[byte].push_back(((*itHeader) & (1 << itBits)) >> itBits);
 
-				}
+						if (--itBits < 0)
+						{
+							itBits = 7;
+							if (codeBitCount > 0)
+							{
+								++itHeader;
+							}
+						}
+					}
+					++itHeader;
+				} while (itHeader != header.end());
 
-				return std::map<char, std::vector<bool>>();
+				return code;
 			}
 		}
 
@@ -188,7 +224,7 @@ namespace compression
 			dataOut.push_back(0);
 
 			std::map<char, uint64_t> byteOccurences = {};
-			std::vector<node_t *> rootNodes;
+			std::vector<node_t *> treeNodes;
 			std::vector<bool> bits;
 			node_t node;
 
@@ -199,34 +235,40 @@ namespace compression
 
 			for (std::pair<char, uint64_t> pair : byteOccurences)
 			{
-				rootNodes.push_back(new node_t(pair.first, pair.second));
+				treeNodes.push_back(new node_t(pair.first, pair.second));
 			}
 
-			while (rootNodes.size() > 1)
+			while (treeNodes.size() > 1)
 			{
-				std::sort(rootNodes.begin(), rootNodes.end(), [](const node_t *node0, const node_t *node1) { return node0->occurences < node1->occurences; });
+				std::sort(treeNodes.begin(), treeNodes.end(), [](const node_t *node0, const node_t *node1) { return node0->occurences < node1->occurences; });
 
-				if (rootNodes.size() >= 2)
+				if (treeNodes.size() >= 2)
 				{
-					rootNodes.push_back(new node_t(rootNodes[0], rootNodes[1], rootNodes[0]->occurences + rootNodes[1]->occurences));
-					rootNodes.erase(rootNodes.begin(), rootNodes.begin() + 2);
+					treeNodes.push_back(new node_t(treeNodes[0], treeNodes[1], treeNodes[0]->occurences + treeNodes[1]->occurences));
+					treeNodes.erase(treeNodes.begin(), treeNodes.begin() + 2);
 				}
 			}
 
 			std::map<char, std::vector<bool>> code;
-			rootNodes[0]->getCode(code);
+			treeNodes[0]->getCode(code);
 
 			dataOut = header::serialize(code);
+			dataOut.insert(dataOut.begin(), static_cast<char>(dataIn.size()));
+			dataOut.insert(dataOut.begin(), static_cast<char>(dataIn.size() >> 8));
+			dataOut.insert(dataOut.begin(), static_cast<char>(dataIn.size() >> 16));
+			dataOut.insert(dataOut.begin(), static_cast<char>(dataIn.size() >> 24));
+
+			dataOut.push_back(0);
 
 			int8_t itBits = 7;
 			int64_t itCodeBits = 0;
 			for (char byte : dataIn)
 			{
-				itCodeBits = code[byte].size() - 1;
-				while (itCodeBits >= 0)
+				itCodeBits = 0;
+				while (itCodeBits < code[byte].size())
 				{
 					dataOut[dataOut.size() - 1] |= (code[byte][itCodeBits] << itBits);
-					--itCodeBits;
+					++itCodeBits;
 					if (--itBits < 0)
 					{
 						itBits = 7;
@@ -236,12 +278,11 @@ namespace compression
 			}
 
 			// cleanup
-			for (node_t *node : rootNodes)
+			for (node_t *node : treeNodes)
 			{
-				delete node;
+				node->freeRecursively();
+				node = nullptr;
 			}
-
-			decode(dataOut);
 
 			return dataOut;
 		}
@@ -251,13 +292,75 @@ namespace compression
 		*/
 		std::vector<char> decode(const std::vector<char> &dataIn)
 		{
+			std::vector<char> dataOut;
+
+			node_t *treeNode = new node_t(nullptr, nullptr);
+			node_t *node = treeNode;
+
+			int16_t itBits = 7;
+
 			uint16_t headerSize = 0;
+			uint32_t originalDataSize = 0;
 
-			headerSize = (dataIn[0] << 8) | dataIn[1];
+			originalDataSize |= static_cast<uint32_t>(dataIn[3]) & 0x000000FF;
+			originalDataSize |= (static_cast<uint32_t>(dataIn[2]) << 8) & 0x0000FF00;
+			originalDataSize |= (static_cast<uint32_t>(dataIn[1]) << 16) & 0x00FF0000;
+			originalDataSize |= (static_cast<uint32_t>(dataIn[0]) << 24) & 0xFF000000;
 
-			std::map<char, std::vector<bool>> code = header::deserialize({ dataIn.begin() + 2, dataIn.begin() + 2 + headerSize });
+			headerSize |= static_cast<uint16_t>(dataIn[5]) & 0x00FF;
+			headerSize |= (static_cast<uint16_t>(dataIn[4]) << 8) & 0xFF00;
 
-			return std::vector<char>();
+			std::map<char, std::vector<bool>> code = header::deserialize({ dataIn.begin() + 6, dataIn.begin() + headerSize + 4 });
+
+			for (std::pair<char, std::vector<bool>> pair : code)
+			{
+				node = treeNode;
+				for (std::vector<bool>::iterator itBits = pair.second.begin(); itBits != pair.second.end(); ++itBits)
+				{
+					if ((*itBits ? node->children.second : node->children.first) == nullptr)
+					{
+						(*itBits ? node->children.second : node->children.first) = new node_t(itBits == pair.second.end() - 1 ? pair.first : 0, 0);
+					}
+					node = (*itBits ? node->children.second : node->children.first);
+				}
+			}
+
+			std::vector<char>::const_iterator itBytes = dataIn.begin() + headerSize + 4;
+
+			node = treeNode;
+
+			while (true)
+			{
+				if (node->children.second == nullptr || node->children.first == nullptr)
+				{
+					dataOut.push_back(node->byte);
+					node = treeNode;
+					continue;
+				}
+				else
+				{
+					node = ((*itBytes & (1 << itBits)) >> itBits) ? node->children.second : node->children.first;
+				}
+
+				if (--itBits < 0)
+				{
+					itBits = 7;
+					if (++itBytes == dataIn.end())
+					{
+						break;
+					}
+				}
+			}
+
+			treeNode->freeRecursively();
+			treeNode = nullptr;
+
+			while (dataOut.size() > originalDataSize)
+			{
+				dataOut.erase(dataOut.end() - 1);
+			}
+
+			return dataOut;
 		}
 	} // namespace huffman
 } // namespace compression
