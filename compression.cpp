@@ -10,6 +10,8 @@
 #include <map>
 #include <iostream>
 
+#include <SFML/Graphics.hpp>
+
 #include "compression.h"
 
 namespace compression
@@ -134,6 +136,53 @@ namespace compression
 					nodes[byte] = tempBitset;
 				}
 			}
+
+			void getDepth(uint64_t &totalDepth, uint64_t currentDepth = 0)
+			{
+				if (children.first != nullptr)
+				{
+					++currentDepth;
+					children.first->getDepth(totalDepth, currentDepth);
+					--currentDepth;
+				}
+				if (children.second != nullptr)
+				{
+					++currentDepth;
+					children.second->getDepth(totalDepth, currentDepth);
+					--currentDepth;
+				}
+				if (children.first == nullptr && children.second == nullptr)
+				{
+					if (currentDepth > totalDepth)
+					{
+						totalDepth = currentDepth;
+					}
+				}
+			}
+
+			void drawRecursively(sf::RenderTarget &target, sf::CircleShape &shape, uint64_t itDepth, const uint64_t &totalDepth, const uint8_t &minSpace)
+			{
+				target.draw(shape);
+
+				const float deltaX = (std::pow(2, totalDepth - itDepth - 1) / 2.0f) * (minSpace + shape.getRadius() * 2), deltaY = shape.getRadius() * 2;
+
+				if (children.first != nullptr)
+				{
+					++itDepth;
+					shape.setPosition(shape.getPosition().x - deltaX, shape.getPosition().y + deltaY);
+					children.first->drawRecursively(target, shape, itDepth, totalDepth, minSpace);
+					--itDepth;
+					shape.setPosition(shape.getPosition().x + deltaX, shape.getPosition().y - deltaY);
+				}
+				if (children.second != nullptr)
+				{
+					++itDepth;
+					shape.setPosition(shape.getPosition().x + deltaX, shape.getPosition().y + deltaY);
+					children.second->drawRecursively(target, shape, itDepth, totalDepth, minSpace);
+					--itDepth;
+					shape.setPosition(shape.getPosition().x - deltaX, shape.getPosition().y - deltaY);
+				}
+			}
 		};
 
 		std::vector<bool> node_t::tempBitset = {};
@@ -178,6 +227,42 @@ namespace compression
 				return header;
 			}
 
+			void serialize(const std::map<char, std::vector<bool>> &code, std::ostream &dataOut)
+			{
+				std::vector<char> header;
+				int16_t itBits = 0;
+				uint8_t itCodeBits = 0;
+
+				for (std::pair<char, std::vector<bool>> pair : code)
+				{
+					header.push_back(pair.first);
+					header.push_back(pair.second.size());
+					header.push_back(0);
+
+					for (itCodeBits = 0, itBits = 7; itCodeBits < pair.second.size();)
+					{
+						header[header.size() - 1] |= (pair.second[itCodeBits++] << itBits);
+
+						if (--itBits < 0)
+						{
+							itBits = 7;
+							if (itCodeBits < pair.second.size())
+							{
+								header.push_back(0);
+							}
+						}
+					}
+				}
+
+				header.insert(header.begin(), static_cast<char>(header.size() + 2));
+				header.insert(header.begin(), static_cast<char>((header.size() + 1) >> 8));
+
+				for (char byte : header)
+				{
+					dataOut << byte;
+				}
+			}
+
 			/**
 			* \brief		Deserialize header to huffman code
 			* \param[in]	header Header to be deserialized
@@ -218,7 +303,7 @@ namespace compression
 		/**
 		* \brief		Huffman encode entire dataset
 		*/
-		std::vector<char> encode(const std::vector<char> &dataIn)
+		std::vector<char> encode(const std::vector<char> &dataIn, node_t *&topNode)
 		{
 			std::vector<char> dataOut;
 			dataOut.push_back(0);
@@ -277,14 +362,130 @@ namespace compression
 				}
 			}
 
-			// cleanup
-			for (node_t *node : treeNodes)
-			{
-				node->freeRecursively();
-				node = nullptr;
-			}
+			topNode = treeNodes[0];
 
 			return dataOut;
+		}
+
+#ifdef SFML_STATIC
+		std::vector<char> encode(const std::vector<char> &dataIn, sf::RenderTexture &texture)
+		{
+			node_t *topNode = nullptr;
+			std::vector<char> dataOut;
+			uint64_t depth = 0;
+			constexpr float radius = 1;
+			constexpr uint8_t minSpace = 1;
+			sf::CircleShape circle(radius);
+			uint64_t itDepth = 0;
+
+			dataOut = encode(dataIn, topNode);
+
+			topNode->getDepth(depth);
+
+			texture.create(std::pow(2, depth) * (2 * radius + minSpace) - minSpace, 2 * radius * (depth + 1));
+
+			circle.setPosition(texture.getSize().x / 2, 0);
+
+			topNode->drawRecursively(texture, circle, itDepth, depth, minSpace);
+
+			topNode->freeRecursively();
+			topNode = nullptr;
+
+			return dataOut;
+		}
+#endif // SFML_STATIC
+
+		std::vector<char> encode(const std::vector<char> &dataIn)
+		{
+			node_t *topNode = nullptr;
+			std::vector<char> dataOut;
+
+			dataOut = encode(dataIn, topNode);
+
+			topNode->freeRecursively();
+			topNode = nullptr;
+
+			return dataOut;
+		}
+
+		void encode(std::istream &dataIn, std::ostream &dataOut, node_t *&topNode)
+		{
+			std::map<char, uint64_t> byteOccurences = {};
+			std::vector<node_t *> treeNodes;
+			std::vector<bool> bits;
+			node_t node;
+
+			dataIn.seekg(0, dataIn.beg);
+
+			{
+				char byte;
+				while (dataIn.get(byte))
+				{
+					++byteOccurences[byte];
+				}
+			}
+
+			dataIn.clear();
+			
+			for (std::pair<char, uint64_t> pair : byteOccurences)
+			{
+				treeNodes.push_back(new node_t(pair.first, pair.second));
+			}
+
+			while (treeNodes.size() > 1)
+			{
+				std::sort(treeNodes.begin(), treeNodes.end(), [](const node_t *node0, const node_t *node1) { return node0->occurences < node1->occurences; });
+
+				if (treeNodes.size() >= 2)
+				{
+					treeNodes.push_back(new node_t(treeNodes[0], treeNodes[1], treeNodes[0]->occurences + treeNodes[1]->occurences));
+					treeNodes.erase(treeNodes.begin(), treeNodes.begin() + 2);
+				}
+			}
+
+			{
+				dataIn.seekg(0, dataIn.end);
+				const size_t size = dataIn.tellg();
+				dataOut << static_cast<char>(size);
+				dataOut << static_cast<char>(size >> 8);
+				dataOut << static_cast<char>(size >> 16);
+				dataOut << static_cast<char>(size >> 24);
+			}
+
+			std::map<char, std::vector<bool>> code;
+			treeNodes[0]->getCode(code);
+			header::serialize(code, dataOut);
+
+			char outByte = 0, inByte = 0;
+			int8_t itBits = 7;
+			int64_t itCodeBits = 0;
+			dataIn.seekg(0, dataIn.beg);
+			while(dataIn.get(inByte))
+			{
+				itCodeBits = 0;
+				while (itCodeBits < code[inByte].size())
+				{
+					outByte |= (code[inByte][itCodeBits] << itBits);
+					++itCodeBits;
+					if (--itBits < 0)
+					{
+						itBits = 7;
+						dataOut << outByte;
+					}
+				}
+			}
+
+			topNode = treeNodes[0];
+		}
+
+		void encode(std::istream &dataIn, std::ostream &dataOut)
+		{
+			node_t *topNode = nullptr;
+
+			encode(dataIn, dataOut, topNode);
+
+			topNode->freeRecursively();
+			topNode = nullptr;
 		}
 
 		/**

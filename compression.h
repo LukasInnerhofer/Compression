@@ -10,6 +10,8 @@
 
 #include <vector>
 
+#include <SFML/Graphics.hpp>
+
 namespace compression
 {
 	/**
@@ -37,6 +39,12 @@ namespace compression
 		* \brief		Huffman encode entire dataset
 		*/
 		std::vector<char> encode(const std::vector<char> &dataIn);
+
+#ifdef SFML_STATIC
+		std::vector<char> encode(const std::vector<char> &dataIn, sf::RenderTexture &texture);
+#endif // SFML_STATIC
+
+		void encode(std::istream &dataIn, std::ostream &dataOut);
 
 		/**
 		* \brief		Huffman decode entire dataset
