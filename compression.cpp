@@ -13,6 +13,7 @@
 #include <SFML/Graphics.hpp>
 
 #include "compression.h"
+#include "node.h"
 
 namespace compression
 {
@@ -80,113 +81,6 @@ namespace compression
 
 	namespace huffman
 	{
-		struct node_t
-		{
-			static std::vector<bool> tempBitset;
-
-			char byte = 0;
-			uint64_t occurences = 0;
-			std::pair<node_t *, node_t *> children = { nullptr, nullptr };
-
-			node_t() {}
-			node_t(const char byte, const uint64_t &occurences)
-			{
-				this->byte = byte;
-				this->occurences = occurences;
-			}
-			node_t(node_t *child0, node_t *child1)
-			{
-				children.first = child0;
-				children.second = child1;
-			}
-			node_t(node_t *child0, node_t *child1, const uint64_t &occurences) : node_t(child0, child1)
-			{
-				this->occurences = occurences;
-			}
-
-			void freeRecursively()
-			{
-				if (children.first != nullptr)
-				{
-					children.first->freeRecursively();
-					children.first = nullptr;
-				}
-				if (children.second != nullptr)
-				{
-					 
-					children.second->freeRecursively();
-					children.second = nullptr;
-				}
-				delete this;
-			}
-
-			void getCode(std::map<char, std::vector<bool>> &nodes)
-			{
-				if (children.first != nullptr && children.second != nullptr)
-				{
-					tempBitset.push_back(false);
-					children.first->getCode(nodes);
-					tempBitset.erase(tempBitset.end() - 1);
-					tempBitset.push_back(true);
-					children.second->getCode(nodes);
-					tempBitset.erase(tempBitset.end() - 1);
-				}
-				else
-				{
-					nodes[byte] = tempBitset;
-				}
-			}
-
-			void getDepth(uint64_t &totalDepth, uint64_t currentDepth = 0)
-			{
-				if (children.first != nullptr)
-				{
-					++currentDepth;
-					children.first->getDepth(totalDepth, currentDepth);
-					--currentDepth;
-				}
-				if (children.second != nullptr)
-				{
-					++currentDepth;
-					children.second->getDepth(totalDepth, currentDepth);
-					--currentDepth;
-				}
-				if (children.first == nullptr && children.second == nullptr)
-				{
-					if (currentDepth > totalDepth)
-					{
-						totalDepth = currentDepth;
-					}
-				}
-			}
-
-			void drawRecursively(sf::RenderTarget &target, sf::CircleShape &shape, uint64_t itDepth, const uint64_t &totalDepth, const uint8_t &minSpace)
-			{
-				target.draw(shape);
-
-				const float deltaX = (std::pow(2, totalDepth - itDepth - 1) / 2.0f) * (minSpace + shape.getRadius() * 2), deltaY = shape.getRadius() * 2;
-
-				if (children.first != nullptr)
-				{
-					++itDepth;
-					shape.setPosition(shape.getPosition().x - deltaX, shape.getPosition().y + deltaY);
-					children.first->drawRecursively(target, shape, itDepth, totalDepth, minSpace);
-					--itDepth;
-					shape.setPosition(shape.getPosition().x + deltaX, shape.getPosition().y - deltaY);
-				}
-				if (children.second != nullptr)
-				{
-					++itDepth;
-					shape.setPosition(shape.getPosition().x + deltaX, shape.getPosition().y + deltaY);
-					children.second->drawRecursively(target, shape, itDepth, totalDepth, minSpace);
-					--itDepth;
-					shape.setPosition(shape.getPosition().x - deltaX, shape.getPosition().y - deltaY);
-				}
-			}
-		};
-
-		std::vector<bool> node_t::tempBitset = {};
-
 		namespace header
 		{
 			/*
@@ -303,15 +197,15 @@ namespace compression
 		/**
 		* \brief		Huffman encode entire dataset
 		*/
-		std::vector<char> encode(const std::vector<char> &dataIn, node_t *&topNode)
+		std::vector<char> encode(const std::vector<char> &dataIn, Node *&topNode)
 		{
 			std::vector<char> dataOut;
 			dataOut.push_back(0);
 
 			std::map<char, uint64_t> byteOccurences = {};
-			std::vector<node_t *> treeNodes;
+			std::vector<Node *> treeNodes;
 			std::vector<bool> bits;
-			node_t node;
+			Node node;
 
 			for (char byte : dataIn)
 			{
@@ -320,23 +214,26 @@ namespace compression
 
 			for (std::pair<char, uint64_t> pair : byteOccurences)
 			{
-				treeNodes.push_back(new node_t(pair.first, pair.second));
+				treeNodes.push_back(new Node(pair.first, pair.second));
 			}
 
 			while (treeNodes.size() > 1)
 			{
-				std::sort(treeNodes.begin(), treeNodes.end(), [](const node_t *node0, const node_t *node1) { return node0->occurences < node1->occurences; });
+				std::sort(treeNodes.begin(), treeNodes.end(), [](const Node *node0, const Node *node1) { return node0->getOccurences() < node1->getOccurences(); });
 
 				if (treeNodes.size() >= 2)
 				{
-					treeNodes.push_back(new node_t(treeNodes[0], treeNodes[1], treeNodes[0]->occurences + treeNodes[1]->occurences));
+					treeNodes.push_back(new Node(treeNodes[0], treeNodes[1], treeNodes[0]->getOccurences() + treeNodes[1]->getOccurences()));
 					treeNodes.erase(treeNodes.begin(), treeNodes.begin() + 2);
 				}
 			}
 
 			std::map<char, std::vector<bool>> code;
-			treeNodes[0]->getCode(code);
-
+			{
+				std::vector<bool> tempBitset;
+				treeNodes[0]->getCode(code, tempBitset);
+			}
+			
 			dataOut = header::serialize(code);
 			dataOut.insert(dataOut.begin(), static_cast<char>(dataIn.size()));
 			dataOut.insert(dataOut.begin(), static_cast<char>(dataIn.size() >> 8));
@@ -370,23 +267,16 @@ namespace compression
 #ifdef SFML_STATIC
 		std::vector<char> encode(const std::vector<char> &dataIn, sf::RenderTexture &texture)
 		{
-			node_t *topNode = nullptr;
+			/* TODO:	Place nodes into matrix. Every node follows following constraints: 
+			*				- Be at least 1 to the left/right of your parent
+			*				- Be to the left of your 1st child and to the right of your 2nd child
+			*			Try to compress the grid by letting every node strive towards its parent.
+			*			Draw grid to texture.
+			*/
 			std::vector<char> dataOut;
-			uint64_t depth = 0;
-			constexpr float radius = 1;
-			constexpr uint8_t minSpace = 1;
-			sf::CircleShape circle(radius);
-			uint64_t itDepth = 0;
+			Node *topNode = nullptr;
 
 			dataOut = encode(dataIn, topNode);
-
-			topNode->getDepth(depth);
-
-			texture.create(std::pow(2, depth) * (2 * radius + minSpace) - minSpace, 2 * radius * (depth + 1));
-
-			circle.setPosition(texture.getSize().x / 2, 0);
-
-			topNode->drawRecursively(texture, circle, itDepth, depth, minSpace);
 
 			topNode->freeRecursively();
 			topNode = nullptr;
@@ -397,7 +287,7 @@ namespace compression
 
 		std::vector<char> encode(const std::vector<char> &dataIn)
 		{
-			node_t *topNode = nullptr;
+			Node *topNode = nullptr;
 			std::vector<char> dataOut;
 
 			dataOut = encode(dataIn, topNode);
@@ -408,12 +298,12 @@ namespace compression
 			return dataOut;
 		}
 
-		void encode(std::istream &dataIn, std::ostream &dataOut, node_t *&topNode)
+		void encode(std::istream &dataIn, std::ostream &dataOut, Node *&topNode)
 		{
 			std::map<char, uint64_t> byteOccurences = {};
-			std::vector<node_t *> treeNodes;
+			std::vector<Node *> treeNodes;
 			std::vector<bool> bits;
-			node_t node;
+			Node node;
 
 			dataIn.seekg(0, dataIn.beg);
 
@@ -429,16 +319,16 @@ namespace compression
 			
 			for (std::pair<char, uint64_t> pair : byteOccurences)
 			{
-				treeNodes.push_back(new node_t(pair.first, pair.second));
+				treeNodes.push_back(new Node(pair.first, pair.second));
 			}
 
 			while (treeNodes.size() > 1)
 			{
-				std::sort(treeNodes.begin(), treeNodes.end(), [](const node_t *node0, const node_t *node1) { return node0->occurences < node1->occurences; });
+				std::sort(treeNodes.begin(), treeNodes.end(), [](const Node *node0, const Node *node1) { return node0->getOccurences() < node1->getOccurences(); });
 
 				if (treeNodes.size() >= 2)
 				{
-					treeNodes.push_back(new node_t(treeNodes[0], treeNodes[1], treeNodes[0]->occurences + treeNodes[1]->occurences));
+					treeNodes.push_back(new Node(treeNodes[0], treeNodes[1], treeNodes[0]->getOccurences() + treeNodes[1]->getOccurences()));
 					treeNodes.erase(treeNodes.begin(), treeNodes.begin() + 2);
 				}
 			}
@@ -453,7 +343,12 @@ namespace compression
 			}
 
 			std::map<char, std::vector<bool>> code;
-			treeNodes[0]->getCode(code);
+
+			{
+				std::vector<bool> tempBitset;
+				treeNodes[0]->getCode(code, tempBitset);
+			}
+			
 			header::serialize(code, dataOut);
 
 			char outByte = 0, inByte = 0;
@@ -480,7 +375,7 @@ namespace compression
 
 		void encode(std::istream &dataIn, std::ostream &dataOut)
 		{
-			node_t *topNode = nullptr;
+			Node *topNode = nullptr;
 
 			encode(dataIn, dataOut, topNode);
 
@@ -495,8 +390,8 @@ namespace compression
 		{
 			std::vector<char> dataOut;
 
-			node_t *treeNode = new node_t(nullptr, nullptr);
-			node_t *node = treeNode;
+			Node *treeNode = new Node(nullptr, nullptr);
+			Node *node = treeNode;
 
 			int16_t itBits = 7;
 
@@ -518,11 +413,19 @@ namespace compression
 				node = treeNode;
 				for (std::vector<bool>::iterator itBits = pair.second.begin(); itBits != pair.second.end(); ++itBits)
 				{
-					if ((*itBits ? node->children.second : node->children.first) == nullptr)
+					if ((*itBits ? node->getChildren().second : node->getChildren().first) == nullptr)
 					{
-						(*itBits ? node->children.second : node->children.first) = new node_t(itBits == pair.second.end() - 1 ? pair.first : 0, 0);
+						Node *newNode = new Node(itBits == pair.second.end() - 1 ? pair.first : 0, 0);
+						if (*itBits)
+						{
+							node->setSecondChild(newNode);
+						}
+						else
+						{
+							node->setFirstChild(newNode);
+						}
 					}
-					node = (*itBits ? node->children.second : node->children.first);
+					node = (*itBits ? node->getChildren().second : node->getChildren().first);
 				}
 			}
 
@@ -532,15 +435,15 @@ namespace compression
 
 			while (true)
 			{
-				if (node->children.second == nullptr || node->children.first == nullptr)
+				if (node->getChildren().second == nullptr || node->getChildren().first == nullptr)
 				{
-					dataOut.push_back(node->byte);
+					dataOut.push_back(node->getByte());
 					node = treeNode;
 					continue;
 				}
 				else
 				{
-					node = ((*itBytes & (1 << itBits)) >> itBits) ? node->children.second : node->children.first;
+					node = ((*itBytes & (1 << itBits)) >> itBits) ? node->getChildren().second : node->getChildren().first;
 				}
 
 				if (--itBits < 0)
